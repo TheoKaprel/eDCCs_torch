@@ -15,11 +15,9 @@ class forwardprojection(torch.autograd.Function):
         image_itkimg.CopyInformation(spect_model.like_itkimg)
 
         spect_model.joseph_forward_projector.SetInput(1, image_itkimg)
-        zero_proj_array = np.zeros_like(spect_model.projection_array) #
-        zero_proj_itkimg = itk.image_from_array(zero_proj_array) #
-        zero_proj_itkimg.CopyInformation(spect_model.projection_itkimg) #
-        spect_model.joseph_forward_projector.SetInput(0, zero_proj_itkimg) #
+        spect_model.set_zero_proj_to_forward_projector()
         spect_model.joseph_forward_projector.Update()
+
         forward_projected_itkimg = spect_model.joseph_forward_projector.GetOutput()
         return torch.tensor(itk.array_from_image(forward_projected_itkimg), device=device)
 
@@ -30,18 +28,16 @@ class forwardprojection(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, projections_tensor):
-
         spect_model = ctx.spect_model
 
         projections_array = projections_tensor.cpu().numpy()
         projections_itkimg = itk.image_from_array(projections_array)
         projections_itkimg.CopyInformation(spect_model.projection_itkimg)
-        zero_img_array = np.zeros_like(spect_model.like_array) #
-        zero_img_itkimg = itk.image_from_array(zero_img_array) #
-        zero_img_itkimg.CopyInformation(spect_model.like_itkimg) #
-        spect_model.joseph_back_projector.SetInput(0, zero_img_itkimg) #
+
+        spect_model.set_zero_img_to_back_projector()
         spect_model.joseph_back_projector.SetInput(1, projections_itkimg)
         spect_model.joseph_back_projector.Update()
+
         image_itkimg = spect_model.joseph_back_projector.GetOutput()
         image_tensor = torch.tensor(itk.array_from_image(image_itkimg),device=projections_tensor.device)
         return image_tensor, None
@@ -51,7 +47,6 @@ class forwardprojection(torch.autograd.Function):
 class SPECT_system_torch(torch.nn.Module):
     def __init__(self, projections_fn, like_fn, geom_fn):
         super().__init__()
-
         self.Dimension = 3
         self.pixelType = itk.F
         self.imageType = itk.Image[self.pixelType, self.Dimension]
@@ -79,6 +74,17 @@ class SPECT_system_torch(torch.nn.Module):
         self.like_array = itk.array_from_image(self.like_itkimg)
 
 
+    def set_zero_proj_to_forward_projector(self):
+        zero_proj_array = np.zeros_like(self.projection_array) #
+        zero_proj_itkimg = itk.image_from_array(zero_proj_array) #
+        zero_proj_itkimg.CopyInformation(self.projection_itkimg) #
+        self.joseph_forward_projector.SetInput(0, zero_proj_itkimg) #
+
+    def set_zero_img_to_back_projector(self):
+        zero_img_array = np.zeros_like(self.like_array) #
+        zero_img_itkimg = itk.image_from_array(zero_img_array) #
+        zero_img_itkimg.CopyInformation(self.like_itkimg) #
+        self.joseph_back_projector.SetInput(0, zero_img_itkimg) #
 
 def main():
     print(args)
