@@ -145,8 +145,16 @@ def main():
             image_k_itkimg.CopyInformation(spect.like_itkimg)
             itk.imwrite(image_k_itkimg, args.iteration_file_name.replace("%d", str(iteration)))
 
+    image_k_array = image_k_tensor_positive.detach().cpu().numpy()
+    image_k_itkimg = itk.image_from_array(image_k_array)
+    image_k_itkimg.CopyInformation(spect.like_itkimg)
+    itk.imwrite(image_k_itkimg, args.output)
+
+
     fig,ax = plt.subplots()
     ax.plot(np.arange(1,args.niter+1), list_loss)
+    ax.set_ylabel("Negative Poisson Log Likelihood")
+    ax.set_xlabel("Iterations")
     plt.show()
 
 if __name__ == '__main__':
