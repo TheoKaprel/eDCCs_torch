@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-class forwardprojection(torch.autograd.Function):
+class ForwardProjection(torch.autograd.Function):
     @staticmethod
     def forward(image_tensor, spect_model):
         """
@@ -72,7 +72,7 @@ class SPECT_system_torch(torch.nn.Module):
     def __init__(self, projections_fn, like_fn, geom_fn):
         super().__init__()
         self.Dimension = 3
-        self.pixelType = itk.F
+        self.pixelType = itk.D
         self.imageType = itk.Image[self.pixelType, self.Dimension]
 
         self.projection_fn = projections_fn
@@ -115,6 +115,10 @@ def main():
 
     spect = SPECT_system_torch(projections_fn=args.projections,like_fn=args.likeimg,geom_fn=args.geom)
 
+    def forward_projection(input, spect = spect):
+        return ForwardProjection.apply(input, spect)
+
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print(f"Device : {device}")
@@ -122,6 +126,13 @@ def main():
     image_k_array = np.ones_like(spect.like_itkimg)
     image_k_tensor = torch.tensor(image_k_array, device=device)
     image_k_tensor.requires_grad_(True)
+
+    print("--"*30)
+    print("GRAD CHECK: ")
+    input = torch.nn.functional.relu(torch.randn(image_k_tensor.shape,dtype=torch.double,requires_grad=True) + 10)
+    test_grad = torch.autograd.gradcheck(forward_projection, input, eps = 1e-6, atol = 1e-4,fast_mode=True)
+    print(test_grad)
+    print("--" * 30)
 
     projections_tensor = torch.tensor(spect.projection_array, device=device)
 
@@ -131,7 +142,7 @@ def main():
     for iteration in range(1,args.niter+1):
         optimizer.zero_grad()
         image_k_tensor_positive = torch.nn.functional.relu(image_k_tensor) # just to make sure image counts are positive
-        fp_image_k_tensor = forwardprojection.apply(image_k_tensor_positive, spect) # computes forward-projection of current estimate
+        fp_image_k_tensor = forward_projection(image_k_tensor_positive, spect) # computes forward-projection of current estimate
         loss = (fp_image_k_tensor - projections_tensor * torch.log(fp_image_k_tensor+1e-8)).mean() # negativ poisson log likelihood loss
         loss.backward() # backpropagates gradients with respect to the input image
         optimizer.step() # updates image voxels values

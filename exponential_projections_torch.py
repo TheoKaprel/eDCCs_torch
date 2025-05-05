@@ -1,9 +1,11 @@
 import numpy as np
 import itk
 from itk import RTK as rtk
-
+import math
+import gatetools as gt
 import torch
 import time
+import torchvision
 
 class ExponentialProjectionsTorch():
     def __init__(self,
@@ -21,7 +23,7 @@ class ExponentialProjectionsTorch():
         self.get_physical_coordinates()
 
         self.exponential_projections_array = self.projections_array * self.conversion_factor_array
-        self.exponential_projections_tensor = torch.from_numpy(self.exponential_projections_array).to(device=self.device)
+        self.exponential_projections_tensor = torch.from_numpy(self.exponential_projections_array).to(device=self.device).to(torch.float64)
 
     def read_input_images(self, projs_fn,attmap_fn, kregion_fn, conversion_factor_fn):
 
@@ -37,8 +39,16 @@ class ExponentialProjectionsTorch():
 
         self.kregion_tensor = torch.from_numpy(self.kregion_array).to(self.device)
         self.attmap_tensor = torch.from_numpy(self.attmap_array).to(self.device)
-        self.conversion_factor_tensor = torch.from_numpy(self.conversion_factor_array).to(self.device)
-        self.projections_tensor = torch.from_numpy(self.projections_array).to(self.device)
+        self.conversion_factor_tensor = torch.from_numpy(self.conversion_factor_array).to(self.device).to(torch.float64)
+        self.projections_tensor = torch.from_numpy(self.projections_array).to(self.device).to(torch.float64)
+
+    def re_init_projections_tensor(self):
+        self.projections_tensor = torch.from_numpy(self.projections_array).to(self.device).to(torch.float64)
+        self.exponential_projections_tensor = self.projections_tensor * self.conversion_factor_tensor
+
+    def set_new_projections_tensor(self, projections_tensor):
+        self.projections_tensor = projections_tensor
+        self.exponential_projections_tensor = self.projections_tensor * self.conversion_factor_tensor
 
     def read_geometry(self, geometry_fn):
         geometryReader = rtk.ThreeDCircularProjectionGeometryXMLFileReader.New()
@@ -46,7 +56,7 @@ class ExponentialProjectionsTorch():
         geometryReader.GenerateOutputInformation()
         self.geometry = geometryReader.GetGeometry()
         self.angles_rad_array = 1. * np.asarray(self.geometry.GetGantryAngles())
-        self.angles_rad_tensor = torch.from_numpy(self.angles_rad_array).to(device=self.device)
+        self.angles_rad_tensor = torch.from_numpy(self.angles_rad_array).to(device=self.device).to(torch.float64)
         self.n_angles = len(self.angles_rad_array)
 
     def compute_mu0(self):
@@ -68,8 +78,9 @@ class ExponentialProjectionsTorch():
 
         self.s = np.linspace(self.origin[0], self.origin[0] + (self.projs_size[0] - 1) * self.spacing[0], self.projs_size[0])
         self.s_tensor = torch.from_numpy(self.s).to(device=self.device)
+        self.delta_s = (self.s_tensor[1] - self.s_tensor[0])
 
-    def compute_edcc(self, em_slice):
+    def compute_edcc_sequential(self, em_slice):
 
         with torch.no_grad():
             t0 = time.time()
@@ -78,7 +89,7 @@ class ExponentialProjectionsTorch():
                 ind_max = self.projs_size[1]
             list_slice = torch.arange(ind_min, ind_max).to(device=self.device)
             self.edcc = torch.Tensor([]).to(device=self.device)
-            self.edcc_no_var = torch.Tensor([]).to(device=self.device)
+            # self.edcc_no_var = torch.Tensor([]).to(device=self.device)
             variance_pij = torch.Tensor([]).to(device=self.device)
             variance_pji = torch.Tensor([]).to(device=self.device)
             t1 = time.time()- t0
@@ -114,7 +125,7 @@ class ExponentialProjectionsTorch():
                     t4_ = time.time()
                     if True:
                         self.edcc = torch.cat((self.edcc, torch.mean(torch.abs(torch.subtract(P_ij, P_ji)))[None])) if (len(self.edcc)!=0) else torch.mean(torch.abs(torch.subtract(P_ij, P_ji)))[None]
-                        self.edcc_no_var = torch.cat((self.edcc_no_var, torch.mean(torch.abs(torch.subtract(P_ij, P_ji)))[None])) if (len(self.edcc_no_var)!=0) else torch.mean(torch.abs(torch.subtract(P_ij, P_ji)))[None]
+                        # self.edcc_no_var = torch.cat((self.edcc_no_var, torch.mean(torch.abs(torch.subtract(P_ij, P_ji)))[None])) if (len(self.edcc_no_var)!=0) else torch.mean(torch.abs(torch.subtract(P_ij, P_ji)))[None]
 
                         Var_ij = (self.s_tensor[1] - self.s_tensor[0]) ** 2 * torch.sum(
                             torch.multiply(self.conversion_factor_tensor[ind_phi_i, list_slice, :] ** 2,
@@ -138,29 +149,36 @@ class ExponentialProjectionsTorch():
             t5 = time.time()-t5_
             for i,t in enumerate([t1,t2,t3,t4,t5]):
                 print('t{}:{}'.format(i+1,t))
-
+            print(f"device: {projection_i.device}")
             return self.edcc
 
-    def comute_edcc_maybe_faster(self, em_slice):
+    def compute_edcc_vectorized(self, em_slice):
         with torch.no_grad():
             ind_min, ind_max = extract_index(em_slice)
             if ind_max == -1:
                 ind_max = self.projs_size[1]
             N = ind_max-ind_min
             angle_indices = torch.arange(0,len(self.angles_rad_tensor)).to(device=self.device)
-            i,j = torch.meshgrid(angle_indices,angle_indices)
-            phi_i,phi_j = torch.meshgrid(self.angles_rad_tensor,self.angles_rad_tensor)
+            i,j = torch.meshgrid(angle_indices,angle_indices, indexing="ij")
+            phi_i,phi_j = torch.meshgrid(self.angles_rad_tensor,self.angles_rad_tensor, indexing="ij")
 
             sigma_ij = self.mu0 * torch.tan(0.5 * (phi_i - phi_j)) # 120,120
             sigma_ji = -1 * sigma_ij
             projection_i = self.exponential_projections_tensor[i,ind_min:ind_max, :] # 120,120,Ny,Nx
+            print(f"projection_i.shape: {projection_i.shape}")
+            # print(f"projection_i.dtype: {projection_i.dtype}")
+            # mem = projection_i.element_size() * projection_i.nelement()
+            # print(f"leading to {mem/2**30} GiB")
             projection_j = self.exponential_projections_tensor[j,ind_min:ind_max, :] # 120,120,Ny,Nx
+
             P_ij = torch.sum(projection_i * torch.exp(self.s_tensor[None,None,None,:] * sigma_ij[:,:,None,None]) * (self.s_tensor[1] - self.s_tensor[0]),
                 dim=3) # 120, 120, Ny
             P_ji = torch.sum(projection_j * torch.exp(self.s_tensor[None,None,None,:] * sigma_ji[:,:,None,None]) * (self.s_tensor[1] - self.s_tensor[0]),
                 dim=3)
+
             P_ij[torch.sum(projection_i, dim=3) < 10] = 0
             P_ji[torch.sum(projection_j, dim=3) < 10] = 0
+
             self.edcc_fast = torch.mean(torch.abs(torch.subtract(P_ij, P_ji)),dim=2)
 
             Var_ij = (self.s_tensor[1] - self.s_tensor[0]) ** 2 * torch.sum(
@@ -188,6 +206,106 @@ class ExponentialProjectionsTorch():
             self.edcc_fast[~mask_angles] = 0
             return self.edcc_fast
 
+
+    def compute_edcc_vectorized_2(self, em_slice):
+        ind_min, ind_max = extract_index(em_slice)
+        if ind_max == -1:
+            ind_max = self.projs_size[1]
+        N = ind_max-ind_min
+        phi_i,phi_j = torch.meshgrid(self.angles_rad_tensor,self.angles_rad_tensor, indexing="ij")
+        mask_angles = (torch.abs(torch.abs(phi_i - phi_j) - torch.pi) > 0.0001) & (torch.abs(phi_i - phi_j) > 0.0001)
+        # sigma_ij = self.mu0 * torch.tan(0.5 * (phi_i - phi_j)) # 120,120
+
+        sigma_ij = torch.zeros_like(phi_i)
+        sigma_ij[mask_angles] = self.mu0 * torch.tan(0.5 * (phi_i[mask_angles] - phi_j[mask_angles])) # 120,120
+
+        exp_sigma_s_ij = torch.exp(sigma_ij[:,:,None]*self.s_tensor[None,None,:])
+        P_ij = torch.einsum('ilk,ijk->ijl', self.exponential_projections_tensor[:,ind_min:ind_max,:], exp_sigma_s_ij*self.delta_s)
+        P_ji = P_ij.transpose(0,1)
+
+        # P_ij[torch.sum(projection_i, dim=3) < 10] = 0
+        # P_ji[torch.sum(projection_j, dim=3) < 10] = 0
+
+        self.edcc_fast = torch.mean(torch.abs(torch.subtract(P_ij, P_ji)),dim=2)
+
+        Var_ij = torch.einsum('ilk,ijk->ij',
+                              self.conversion_factor_tensor[:,ind_min:ind_max,:]**2 * self.projections_tensor[:,ind_min:ind_max,:],
+                              torch.exp(2*sigma_ij[:,:,None]*self.s_tensor[None,None,:]))
+        Var_ji = Var_ij.transpose(0,1)
+
+        # Var_ij[torch.sum(projection_i, dim=3) < 10] = 0
+        # Var_ji[torch.sum(projection_j, dim=3) < 10] = 0
+
+        variance_pij = Var_ij * ((self.s_tensor[1] - self.s_tensor[0]) ** 2) / (N**2)
+        variance_pji = Var_ji * ((self.s_tensor[1] - self.s_tensor[0]) ** 2) / (N**2)
+
+        self.variance = torch.sqrt(N * (variance_pij + variance_pji))
+
+        self.edcc_fast[self.variance > 1e-8] = self.edcc_fast.clone()[self.variance > 1e-8] / self.variance[self.variance > 1e-8]
+
+        self.edcc_fast[~mask_angles] = 0
+        return self.edcc_fast
+
+    def apply_translation_torch(self, translation, index):
+        translation_id_1 = (translation[0] * torch.cos(-self.angles_rad_tensor[index]) + translation[1] * math.sin(-self.angles_rad_tensor[index]))/self.spacing[0]
+        translation_id_2 = translation[2]/self.spacing[1]
+        translation_id = [-translation_id_1,-translation_id_2]
+        return torchvision.transforms.functional.affine(self.projections_tensor[index:index+1,:,:],
+                                                 translate=translation_id,
+                                                 angle = 0, scale=1, shear = 0,
+                                                 interpolation=2)
+    def apply_translation_torch_2(self, translation, index):
+        proj_index = self.projections_tensor[index:index+1,:,:][None,:,:,:]
+        theta = torch.Tensor([[[1,
+                                0,
+                                2*(translation[0] * math.cos(-self.angles_rad_tensor[index]) +
+                                translation[1] * math.sin(-self.angles_rad_tensor[index]))/(self.spacing[0]*proj_index.shape[2])],
+                              [0, 1, 2*translation[2]/(self.spacing[1]*proj_index.shape[3])]]]).to(torch.float64)
+        print(theta.shape)
+        grid = torch.nn.functional.affine_grid(theta, proj_index.size())
+        return torch.nn.functional.grid_sample(proj_index, grid)[0,:,:,:]
+
+    def apply_translation_torch_m(self, translation, m):
+        proj = self.projections_tensor[m:,None,:,:]
+        # theta = torch.Tensor([[[1,0,2*(translation[0] * torch.cos(-self.angles_rad_tensor[k]) +
+        #                         translation[1] * torch.sin(-self.angles_rad_tensor[k]))/(self.spacing[0]*proj.shape[2])],
+        #                       [0, 1, 2*translation[2]/(self.spacing[1]*proj.shape[3])]] for k in range(m, len(self.angles_rad_tensor))]).to(torch.float64)
+        theta = torch.eye(2,3,dtype=torch.float64, device=self.device)[None,:,:]
+        theta = theta.repeat(self.n_angles-m,1,1)
+        theta[:,0,2] = 2*(translation[0] * torch.cos(-self.angles_rad_tensor[m:]) +
+                                translation[1] * torch.sin(-self.angles_rad_tensor[m:]))/(self.spacing[0]*proj.shape[2])
+        theta[:,1,2] = 2*translation[2]/(self.spacing[1]*proj.shape[3])
+
+        grid = torch.nn.functional.affine_grid(theta, proj.size())
+
+        new_projections_tensor = self.projections_tensor.clone()
+        new_projections_tensor[m:,:,:] = torch.nn.functional.grid_sample(proj, grid)[:,0,:,:]
+        self.set_new_projections_tensor(new_projections_tensor)
+
+
+
+    def apply_translation_itk(self, translation, index):
+        '''
+        Correct the rigid translation on a selected projection
+        :param translation: A 3D vector representing the translation
+        :type translation: list
+        :param index: index of the projection
+        :type index: int
+        :return: itk image of the corrected projection
+        :rtype itk.itkImagePython
+        '''
+        matrix = [[1, 0, 0.], [0, 1, 0], [0, 0, 1]]
+        matrix[0][2] = translation[0] * math.cos(-self.angles_rad_array[index]) + translation[1] * math.sin(
+            -self.angles_rad_array[index])
+        matrix[1][2] = translation[2]
+        matrixParameter = itk.matrix_from_array(matrix)
+        itk_projection = itk.GetImageFromArray(self.projections_array[index])
+        itk_projection.SetOrigin(self.origin[:2])
+        itk_projection.SetSpacing(self.spacing[:2])
+        itk_projection.SetDirection(self.direction[:2, :2])
+        shifted_itk_projection = gt.applyTransformation(itk_projection, matrix=matrixParameter,
+                                                        keep_original_canvas=True)
+        return itk.array_from_image(shifted_itk_projection)
 
 def extract_index(input_index):
     """
