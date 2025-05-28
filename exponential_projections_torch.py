@@ -246,6 +246,44 @@ class ExponentialProjectionsTorch():
         self.edcc_fast[~mask_angles] = 0
         return self.edcc_fast
 
+    def compute_edcc_vectorized_input_proj(self, projections_tensor, em_slice,del_mask = False,compute_var = True):
+        exponential_projections_tensor = self.conversion_factor_tensor * projections_tensor
+
+        ind_min, ind_max = extract_index(em_slice)
+        if ind_max == -1:
+            ind_max = self.projs_size[1]
+        N = ind_max-ind_min
+        phi_i,phi_j = torch.meshgrid(self.angles_rad_tensor,self.angles_rad_tensor, indexing="ij")
+        mask_angles = (torch.abs(torch.abs(phi_i - phi_j) - torch.pi) > 0.0001) & (torch.abs(phi_i - phi_j) > 0.0001)
+
+        sigma_ij = torch.zeros_like(phi_i)
+        sigma_ij[mask_angles] = self.mu0 * torch.tan(0.5 * (phi_i[mask_angles] - phi_j[mask_angles])) # 120,120
+
+        exp_sigma_s_ij = torch.exp(sigma_ij[:,:,None]*self.s_tensor[None,None,:])
+        P_ij = torch.einsum('ilk,ijk->ijl', exponential_projections_tensor[:,ind_min:ind_max,:], exp_sigma_s_ij*self.delta_s)
+        P_ji = P_ij.transpose(0,1)
+
+        self.edcc = torch.mean(torch.abs(torch.subtract(P_ij, P_ji)),dim=2)
+
+        if compute_var:
+            Var_ij = torch.einsum('ilk,ijk->ij',
+                                  self.conversion_factor_tensor[:,ind_min:ind_max,:]**2 * projections_tensor[:,ind_min:ind_max,:],
+                                  torch.exp(2*sigma_ij[:,:,None]*self.s_tensor[None,None,:]))
+            Var_ji = Var_ij.transpose(0,1)
+
+            variance_pij = Var_ij * ((self.s_tensor[1] - self.s_tensor[0]) ** 2) / (N**2)
+            variance_pji = Var_ji * ((self.s_tensor[1] - self.s_tensor[0]) ** 2) / (N**2)
+
+            self.variance = torch.sqrt(N * (variance_pij + variance_pji))
+
+            self.edcc[self.variance > 1e-8] = self.edcc[self.variance > 1e-8] / self.variance[self.variance > 1e-8]
+
+        if del_mask:
+            return self.edcc[mask_angles].ravel()
+        else:
+            self.edcc[~mask_angles] = 0
+            return self.edcc
+
     def apply_translation_torch(self, translation, index):
         translation_id_1 = (translation[0] * torch.cos(-self.angles_rad_tensor[index]) + translation[1] * math.sin(-self.angles_rad_tensor[index]))/self.spacing[0]
         translation_id_2 = translation[2]/self.spacing[1]
@@ -261,7 +299,7 @@ class ExponentialProjectionsTorch():
                                 2*(translation[0] * math.cos(-self.angles_rad_tensor[index]) +
                                 translation[1] * math.sin(-self.angles_rad_tensor[index]))/(self.spacing[0]*proj_index.shape[2])],
                               [0, 1, 2*translation[2]/(self.spacing[1]*proj_index.shape[3])]]]).to(torch.float64)
-        print(theta.shape)
+
         grid = torch.nn.functional.affine_grid(theta, proj_index.size())
         return torch.nn.functional.grid_sample(proj_index, grid)[0,:,:,:]
 
@@ -364,3 +402,23 @@ def get_device(device_name=None):
         print("WARNING : device {} unrecognized.".format(device_name))
     print('Device is: {}'.format(device))
     return device
+
+
+
+class Motion(torch.nn.Module):
+    def __init__(self,projections_edcc, device, em_slice):
+        super().__init__()
+        self.translation = torch.nn.Parameter(
+            torch.randn((3), device=device, requires_grad=True, dtype=torch.float32))
+
+        self.m = torch.nn.Parameter(
+            torch.rand((1), device=device, requires_grad=True, dtype=torch.float32))
+
+        self.projections_edcc = projections_edcc
+        self.em_slice = em_slice
+
+    def forward(self):
+        self.projections_edcc.re_init_projections_tensor()
+        self.projections_edcc.apply_translation_torch_m(translation=self.translation, m = torch.round_(120*self.m).to(torch.int))
+        eDCCs = self.projections_edcc.compute_edcc_vectorized_2(em_slice=self.em_slice).mean()
+        return eDCCs

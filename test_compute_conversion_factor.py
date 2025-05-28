@@ -50,7 +50,7 @@ def main():
     K_region_fp_filter.SetInput(1, K_region_img)
     K_region_fp_filter.Update()
     projected_K_region_img = K_region_fp_filter.GetOutput()
-    itk.imwrite(projected_K_region_img, "test_K_region_1/projected_K_region.mha")
+    # itk.imwrite(projected_K_region_img, "test_K_region_1/projected_K_region.mha")
     projected_K_region_array = itk.array_from_image(projected_K_region_img)
 
 
