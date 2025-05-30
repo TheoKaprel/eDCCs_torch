@@ -6,7 +6,7 @@ from itk import RTK as rtk
 import numpy as np
 
 class SPECT_system_torch(torch.nn.Module):
-    def __init__(self, projections_fn, like_fn, fbprojectors,nsubsets):
+    def __init__(self, projections_fn, like_fn, fbprojectors,nsubsets,attmap_fn=None):
         super().__init__()
         self.Dimension = 3
         # self.pixelType = itk.D
@@ -25,6 +25,13 @@ class SPECT_system_torch(torch.nn.Module):
         if fbprojectors=="Joseph":
             self.forward_projector = rtk.JosephForwardProjectionImageFilter[self.imageType,self.imageType].New()
             self.back_projector = rtk.JosephBackProjectionImageFilter[self.imageType,self.imageType].New()
+            self.cuda_fb=False
+        elif fbprojectors=="JosephAttenuated":
+            self.forward_projector = rtk.JosephForwardAttenuatedProjectionImageFilter[self.imageType,self.imageType].New()
+            self.back_projector = rtk.JosephBackAttenuatedProjectionImageFilter[self.imageType,self.imageType].New()
+            self.attmap_itkimg = itk.imread(attmap_fn)
+            self.forward_projector.SetInput(2, self.attmap_itkimg)
+            self.back_projector.SetInput(2, self.attmap_itkimg)
             self.cuda_fb=False
         elif fbprojectors=="Zeng":
             self.forward_projector = rtk.ZengForwardProjectionImageFilter[self.imageType,self.imageType].New()
