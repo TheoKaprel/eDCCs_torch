@@ -18,14 +18,14 @@ class ForwardProjection(torch.autograd.Function):
         """
         device = image_tensor.device
         image_array = image_tensor.cpu().numpy()
-        image_itkimg = itk.image_from_array(image_array)
+        image_itkimg = itk.GetImageFromArray(image_array)
         image_itkimg.CopyInformation(spect_model.like_itkimg)
         spect_model.forward_projector.SetInput(1, image_itkimg)
         spect_model.set_zero_proj_to_forward_projector()
         spect_model.forward_projector.Update()
 
         forward_projected_itkimg = spect_model.forward_projector.GetOutput()
-        return torch.tensor(itk.array_from_image(forward_projected_itkimg), device=device)
+        return torch.tensor(itk.GetArrayFromImage(forward_projected_itkimg), device=device)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -45,15 +45,15 @@ class ForwardProjection(torch.autograd.Function):
         """
         spect_model = ctx.spect_model
         projections_array = projections_tensor.cpu().numpy()
-        projections_itkimg = itk.image_from_array(projections_array)
-        projections_itkimg.CopyInformation(spect_model.projection_itkimg)
+        projections_itkimg = itk.GetImageFromArray(projections_array)
+        projections_itkimg.CopyInformation(spect_model.projection_itkimg_subset)
         spect_model.set_zero_img_to_back_projector()
         spect_model.back_projector.SetInput(1, projections_itkimg)
 
         spect_model.back_projector.Update()
 
         image_itkimg = spect_model.back_projector.GetOutput()
-        image_tensor = torch.tensor(itk.array_from_image(image_itkimg),device=projections_tensor.device)
+        image_tensor = torch.tensor(itk.GetArrayFromImage(image_itkimg),device=projections_tensor.device)
         # We return gradients with respect to each input of the "forward" method
         # note: the returned "None" corresponds to the gradient wrt the second input ("spect_model")
         #       for which we don't need to track the gradient
@@ -66,7 +66,7 @@ class BackProjection(torch.autograd.Function):
     def forward(projections_tensor, spect_model):
         projections_array = projections_tensor.cpu().numpy()
         projections_itkimg = itk.image_from_array(projections_array)
-        projections_itkimg.CopyInformation(spect_model.projection_itkimg)
+        projections_itkimg.CopyInformation(spect_model.projection_itkimg_subset)
         spect_model.set_zero_img_to_back_projector()
         spect_model.back_projector.SetInput(1, projections_itkimg)
         spect_model.back_projector.Update()
@@ -78,11 +78,13 @@ class BackProjection(torch.autograd.Function):
     def setup_context(ctx, inputs, output):
         _,spect_model = inputs
         ctx.spect_model = spect_model
+        ctx.geom_index = spect_model.geom_index
 
     @staticmethod
     def backward(ctx, image_tensor):
         device = image_tensor.device
         spect_model = ctx.spect_model
+        spect_model.set_geometry(ctx.geom_index)
         image_array = image_tensor.cpu().numpy()
         image_itkimg = itk.image_from_array(image_array)
         image_itkimg.CopyInformation(spect_model.like_itkimg)

@@ -15,13 +15,13 @@ class SPECT_system_torch(torch.nn.Module):
 
         self.projection_fn = projections_fn
         self.like_fn = like_fn
-
-        self.init_images()
-
         self.nproj = 120
         self.nsubsets = nsubsets
 
         self.geometries = self.get_geometries()
+        self.init_images()
+
+        self.fb_projectors_name = fbprojectors
         if fbprojectors=="Joseph":
             self.forward_projector = rtk.JosephForwardProjectionImageFilter[self.imageType,self.imageType].New()
             self.back_projector = rtk.JosephBackProjectionImageFilter[self.imageType,self.imageType].New()
@@ -29,7 +29,7 @@ class SPECT_system_torch(torch.nn.Module):
         elif fbprojectors=="JosephAttenuated":
             self.forward_projector = rtk.JosephForwardAttenuatedProjectionImageFilter[self.imageType,self.imageType].New()
             self.back_projector = rtk.JosephBackAttenuatedProjectionImageFilter[self.imageType,self.imageType].New()
-            self.attmap_itkimg = itk.imread(attmap_fn)
+            self.attmap_itkimg = itk.imread(attmap_fn,self.pixelType)
             self.forward_projector.SetInput(2, self.attmap_itkimg)
             self.back_projector.SetInput(2, self.attmap_itkimg)
             self.cuda_fb=False
@@ -48,6 +48,13 @@ class SPECT_system_torch(torch.nn.Module):
             self.back_projector = rtk.CudaBackProjectionImageFilter[self.imageType].New()
             self.cuda_fb = True
 
+        self.set_geometry(0)
+        self.projection_itkimg_subset = itk.image_from_array(self.projection_array[self.subset_ids,:,:])
+        self.projection_itkimg_subset.SetSpacing(self.projection_spacing)
+        size_subset = list(self.projection_array[self.subset_ids, :, :].shape)[::-1]
+        origin_subset = [(-s*sp+sp)/2 for s,sp in zip(size_subset,self.projection_spacing)]
+        self.projection_itkimg_subset.SetOrigin(origin_subset)
+
     def init_images(self):
         self.projection_itkimg = itk.imread(self.projection_fn,self.pixelType)
         self.like_itkimg = itk.imread(self.like_fn,self.pixelType)
@@ -59,16 +66,23 @@ class SPECT_system_torch(torch.nn.Module):
         self.zero_proj_array = np.zeros_like(self.projection_array)
         self.zero_img_array = np.zeros_like(self.like_array)
 
-
     def set_zero_proj_to_forward_projector(self):
-        zero_proj_itkimg = itk.image_from_array(self.zero_proj_array[self.subset_ids,:,:])
-        zero_proj_itkimg.CopyInformation(self.projection_itkimg)
+        # zero_proj_itkimg = itk.image_from_array(self.zero_proj_array[self.subset_ids,:,:])
+        zero_proj_itkimg = itk.GetImageFromArray(self.zero_proj_array[self.subset_ids,:,:])
+        zero_proj_itkimg.CopyInformation(self.projection_itkimg_subset)
         self.forward_projector.SetInput(0, zero_proj_itkimg)
 
+        if self.fb_projectors_name=="JosephAttenuated":
+            self.forward_projector.SetInput(2, self.attmap_itkimg)
+
+
     def set_zero_img_to_back_projector(self):
-        zero_img_itkimg = itk.image_from_array(self.zero_img_array)
+        # zero_img_itkimg = itk.image_from_array(self.zero_img_array)
+        zero_img_itkimg = itk.GetImageFromArray(self.zero_img_array)
         zero_img_itkimg.CopyInformation(self.like_itkimg)
         self.back_projector.SetInput(0, zero_img_itkimg)
+        if self.fb_projectors_name=="JosephAttenuated":
+            self.back_projector.SetInput(2, self.attmap_itkimg)
 
 
     def get_geometries(self):
@@ -84,6 +98,7 @@ class SPECT_system_torch(torch.nn.Module):
         return geometries
 
     def set_geometry(self, geom_index):
+        self.geom_index = geom_index
         self.subset_ids = torch.tensor([int(geom_index + self.nsubsets * j) for j in range(self.nprojs_per_subsets)])
         self.geometry = self.geometries[geom_index]
         self.forward_projector.SetGeometry(self.geometry)
@@ -91,10 +106,10 @@ class SPECT_system_torch(torch.nn.Module):
 
     def get_bp_ones(self):
         self.set_zero_img_to_back_projector()
-        ones_proj_array = np.ones_like(self.projection_array)
+        ones_proj_array = np.ones_like(self.projection_array[self.subset_ids,:,:])
         ones_proj_img = itk.image_from_array(ones_proj_array)
-        ones_proj_img.CopyInformation(self.projection_itkimg)
+        ones_proj_img.CopyInformation(self.projection_itkimg_subset)
         self.back_projector.SetInput(1, ones_proj_img)
         self.back_projector.Update()
         bp_ones_itkimg = self.back_projector.GetOutput()
-        self.bp_ones_array = itk.array_from_image(bp_ones_itkimg)
+        return itk.array_from_image(bp_ones_itkimg)

@@ -52,7 +52,8 @@ def main():
     spect = SPECT_system_torch(projections_fn=args.projections,
                                like_fn=args.likeimg,
                                fbprojectors=args.fbprojectors,
-                               nsubsets=args.nsubsets)
+                               nsubsets=args.nsubsets,
+                               attmap_fn = args.attmap_fn)
 
 
     def forward_projection(input, spect = spect):
@@ -140,7 +141,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--projections")
     parser.add_argument("--likeimg")
-    parser.add_argument("--fbprojectors", choices=['Joseph', 'Zeng', 'Cuda'])
+    parser.add_argument("--fbprojectors", choices=['Joseph', 'JosephAttenuated', 'Zeng', 'Cuda'])
+    parser.add_argument("--attmap_fn")
     parser.add_argument("--source")
     parser.add_argument("--output")
     parser.add_argument("--nsubsets", type=int)
