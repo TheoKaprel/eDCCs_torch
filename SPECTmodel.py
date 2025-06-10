@@ -41,6 +41,12 @@ class SPECT_system_torch(torch.nn.Module):
             self.back_projector = rtk.ZengBackProjectionImageFilter[self.imageType,self.imageType].New()
             self.back_projector.SetAlpha(0.03235363042582603)
             self.back_projector.SetSigmaZero(1.1684338873367237)
+
+            if attmap_fn is not None:
+                self.attmap_itkimg = itk.imread(attmap_fn, self.pixelType)
+                self.forward_projector.SetInput(2, self.attmap_itkimg)
+                self.back_projector.SetInput(2, self.attmap_itkimg)
+
             self.cuda_fb = False
         elif fbprojectors=="Cuda":
             self.imageType = itk.CudaImage[self.pixelType,self.Dimension]
