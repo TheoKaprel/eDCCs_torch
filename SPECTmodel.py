@@ -20,7 +20,7 @@ class SPECT_system_torch(torch.nn.Module):
 
         self.geometries = self.get_geometries()
         self.init_images()
-
+        self.with_att = False
         self.fb_projectors_name = fbprojectors
         if fbprojectors=="Joseph":
             self.forward_projector = rtk.JosephForwardProjectionImageFilter[self.imageType,self.imageType].New()
@@ -33,6 +33,7 @@ class SPECT_system_torch(torch.nn.Module):
             self.forward_projector.SetInput(2, self.attmap_itkimg)
             self.back_projector.SetInput(2, self.attmap_itkimg)
             self.cuda_fb=False
+            self.with_att = True
         elif fbprojectors=="Zeng":
             self.forward_projector = rtk.ZengForwardProjectionImageFilter[self.imageType,self.imageType].New()
             self.forward_projector.SetAlpha(0.03235363042582603)
@@ -46,6 +47,7 @@ class SPECT_system_torch(torch.nn.Module):
                 self.attmap_itkimg = itk.imread(attmap_fn, self.pixelType)
                 self.forward_projector.SetInput(2, self.attmap_itkimg)
                 self.back_projector.SetInput(2, self.attmap_itkimg)
+                self.with_att = True
 
             self.cuda_fb = False
         elif fbprojectors=="Cuda":
@@ -78,7 +80,7 @@ class SPECT_system_torch(torch.nn.Module):
         zero_proj_itkimg.CopyInformation(self.projection_itkimg_subset)
         self.forward_projector.SetInput(0, zero_proj_itkimg)
 
-        if self.fb_projectors_name=="JosephAttenuated":
+        if self.with_att:
             self.forward_projector.SetInput(2, self.attmap_itkimg)
 
 
@@ -87,7 +89,7 @@ class SPECT_system_torch(torch.nn.Module):
         zero_img_itkimg = itk.GetImageFromArray(self.zero_img_array)
         zero_img_itkimg.CopyInformation(self.like_itkimg)
         self.back_projector.SetInput(0, zero_img_itkimg)
-        if self.fb_projectors_name=="JosephAttenuated":
+        if self.with_att:
             self.back_projector.SetInput(2, self.attmap_itkimg)
 
 
