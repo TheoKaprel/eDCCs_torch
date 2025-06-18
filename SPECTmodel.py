@@ -75,7 +75,6 @@ class SPECT_system_torch(torch.nn.Module):
         self.zero_img_array = np.zeros_like(self.like_array)
 
     def set_zero_proj_to_forward_projector(self):
-        # zero_proj_itkimg = itk.image_from_array(self.zero_proj_array[self.subset_ids,:,:])
         zero_proj_itkimg = itk.GetImageFromArray(self.zero_proj_array[self.subset_ids,:,:])
         zero_proj_itkimg.CopyInformation(self.projection_itkimg_subset)
         self.forward_projector.SetInput(0, zero_proj_itkimg)
@@ -85,7 +84,6 @@ class SPECT_system_torch(torch.nn.Module):
 
 
     def set_zero_img_to_back_projector(self):
-        # zero_img_itkimg = itk.image_from_array(self.zero_img_array)
         zero_img_itkimg = itk.GetImageFromArray(self.zero_img_array)
         zero_img_itkimg.CopyInformation(self.like_itkimg)
         self.back_projector.SetInput(0, zero_img_itkimg)
