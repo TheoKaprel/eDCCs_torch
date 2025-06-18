@@ -147,7 +147,7 @@ def main():
     source_array = itk.array_from_image(itk.imread(args.source))
 
     if args.archi=="vanilla":
-        archi_infos = "vanilla_{}nfreq_{}_{}".format(args.nfreq,args.layer_acti,args.final_acti)
+        archi_infos = "vanilla_{}nfreqs_{}_{}".format(args.nfreqs,args.layer_acti,args.final_acti)
     else:
         archi_infos = "siren_{}".format(args.final_acti)
 
